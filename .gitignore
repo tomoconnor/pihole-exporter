@@ -1,8 +1,10 @@
-vendor
-bin
-tmp
+# macOS
+.DS_Store
 
-.vscode
-report.xml
-debug
-.idea/
+# Build output
+/pihole-exporter
+/binary
+/dist/
+
+# Local notes, not part of the project
+PROMPT-*.md
