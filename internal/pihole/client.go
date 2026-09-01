@@ -1,8 +1,8 @@
 package pihole
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 
 	log "github.com/sirupsen/logrus"
 
@@ -10,48 +10,15 @@ import (
 	"github.com/eko/pihole-exporter/internal/metrics"
 )
 
-type ClientStatus byte
-
-type AuthenticationResponse struct {
-	Session struct {
-		Valid    bool   `json:"valid"`
-		Totp     bool   `json:"totp"`
-		Sid      string `json:"sid"`
-		Csrf     string `json:"csrf"`
-		Validity int    `json:"validity"`
-		Message  string `json:"message"`
-	} `json:"session"`
-}
-
-const (
-	MetricsCollectionInProgress ClientStatus = iota
-	MetricsCollectionSuccess
-	MetricsCollectionError
-	MetricsCollectionTimeout
-)
-
-func (status ClientStatus) String() string {
-	return []string{"MetricsCollectionInProgress", "MetricsCollectionSuccess", "MetricsCollectionError", "MetricsCollectionTimeout"}[status]
-}
-
-type ClientChannel struct {
-	Status ClientStatus
-	Err    error
-}
-
-func (c *ClientChannel) String() string {
-	if c.Err != nil {
-		return fmt.Sprintf("ClientChannel<Status: %s, Err: '%s'>", c.Status, c.Err.Error())
-	} else {
-		return fmt.Sprintf("ClientChannel<Status: %s, Err: <nil>>", c.Status)
-	}
-}
-
 // Client struct is a Pi-hole client to request an instance of a Pi-hole ad blocker.
+//
+// A Client holds no per-request state. Collection results are returned to the
+// caller rather than published on a channel owned by the Client: the previous
+// design shared one buffered channel across every /metrics request, which let
+// a late result from one request be consumed by the next one.
 type Client struct {
 	apiClient APIClient
 	config    *config.Config
-	Status    chan *ClientChannel
 }
 
 // NewClient method initializes a new Pi-hole client.
@@ -66,7 +33,6 @@ func NewClient(config *config.Config, envConfig *config.EnvConfig) *Client {
 	return &Client{
 		config:    config,
 		apiClient: *NewAPIClient(fmt.Sprintf("%s://%s:%d", config.PIHoleProtocol, config.PIHoleHostname, config.PIHolePort), config.PIHolePassword, envConfig.Timeout, envConfig.SkipTLSVerification),
-		Status:    make(chan *ClientChannel, 1),
 	}
 }
 
@@ -74,22 +40,19 @@ func (c *Client) String() string {
 	return c.config.PIHoleHostname
 }
 
-func (c *Client) CollectMetricsAsync(writer http.ResponseWriter, request *http.Request) {
+// CollectMetrics scrapes the Pi-hole API and updates the Prometheus gauges.
+//
+// It is synchronous and honours ctx: if ctx is cancelled the in-flight HTTP
+// request to Pi-hole is aborted and CollectMetrics returns promptly, so a
+// caller that has given up never leaves a goroutine behind.
+func (c *Client) CollectMetrics(ctx context.Context) error {
 	log.Debugf("Collecting from %s", c.config.PIHoleHostname)
-	if stats, blockedDomains, permittedDomains, clients, upstreams, piHoleStatus, err := c.getStatistics(); err == nil {
-		c.setMetrics(stats, blockedDomains, permittedDomains, clients, upstreams, piHoleStatus)
-		c.Status <- &ClientChannel{Status: MetricsCollectionSuccess, Err: nil}
-		log.Debugf("New tick of statistics from %s: %s", c.config.PIHoleHostname, stats)
-	} else {
-		c.Status <- &ClientChannel{Status: MetricsCollectionError, Err: err}
-	}
-}
 
-func (c *Client) CollectMetrics(writer http.ResponseWriter, request *http.Request) error {
-	stats, blockedDomains, permittedDomains, clients, upstreams, piHoleStatus, err := c.getStatistics()
+	stats, blockedDomains, permittedDomains, clients, upstreams, piHoleStatus, err := c.getStatistics(ctx)
 	if err != nil {
 		return err
 	}
+
 	c.setMetrics(stats, blockedDomains, permittedDomains, clients, upstreams, piHoleStatus)
 	log.Debugf("New tick of statistics from %s: %s", c.config.PIHoleHostname, stats)
 	return nil
@@ -155,7 +118,7 @@ func (c *Client) setMetrics(stats *StatsSummary, blockedDomains *TopDomains, per
 	}
 }
 
-func (c *Client) getStatistics() (*StatsSummary, *TopDomains, *TopDomains, *[]PiHoleClient, *Upstreams, *BlockingStatus, error) {
+func (c *Client) getStatistics(ctx context.Context) (*StatsSummary, *TopDomains, *TopDomains, *[]PiHoleClient, *Upstreams, *BlockingStatus, error) {
 	var statsSummary StatsSummary
 	var permittedDomains TopDomains
 	var blockedDomains TopDomains
@@ -164,37 +127,37 @@ func (c *Client) getStatistics() (*StatsSummary, *TopDomains, *TopDomains, *[]Pi
 	var upstreams Upstreams
 	var piHoleStatus BlockingStatus
 
-	err := c.apiClient.FetchData("/api/stats/summary", &statsSummary)
+	err := c.apiClient.FetchData(ctx, "/api/stats/summary", &statsSummary)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching stats summary: %w", err)
 	}
 
-	err = c.apiClient.FetchData("/api/stats/top_domains?blocked=true&count=10", &blockedDomains)
+	err = c.apiClient.FetchData(ctx, "/api/stats/top_domains?blocked=true&count=10", &blockedDomains)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching blocked domains: %w", err)
 	}
-	err = c.apiClient.FetchData("/api/stats/top_domains?blocked=false&count=10", &permittedDomains)
+	err = c.apiClient.FetchData(ctx, "/api/stats/top_domains?blocked=false&count=10", &permittedDomains)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching permitted domains: %w", err)
 	}
 
-	err = c.apiClient.FetchData("/api/stats/top_clients?blocked=true&count=10", &blockedClients)
+	err = c.apiClient.FetchData(ctx, "/api/stats/top_clients?blocked=true&count=10", &blockedClients)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching blocked clients: %w", err)
 	}
-	err = c.apiClient.FetchData("/api/stats/top_clients?blocked=false&count=10", &permittedClients)
+	err = c.apiClient.FetchData(ctx, "/api/stats/top_clients?blocked=false&count=10", &permittedClients)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching permitted clients: %w", err)
 	}
 
 	clients := MergeClients(permittedClients.Clients, blockedClients.Clients)
 
-	err = c.apiClient.FetchData("/api/stats/upstreams", &upstreams)
+	err = c.apiClient.FetchData(ctx, "/api/stats/upstreams", &upstreams)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching upstream stats: %w", err)
 	}
 
-	err = c.apiClient.FetchData("/api/dns/blocking", &piHoleStatus)
+	err = c.apiClient.FetchData(ctx, "/api/dns/blocking", &piHoleStatus)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("error fetching status: %w", err)
 	}
@@ -204,14 +167,6 @@ func (c *Client) getStatistics() (*StatsSummary, *TopDomains, *TopDomains, *[]Pi
 
 // Close cleans up resources used by the client
 func (c *Client) Close() {
-	// Drain the status channel if needed
-	select {
-	case <-c.Status:
-		// Channel had something, now it's drained
-	default:
-		// Channel was already empty
-	}
-
 	log.Debugf("Closing client %s", c.config.PIHoleHostname)
 	c.apiClient.Close() // Close the API client
 }
