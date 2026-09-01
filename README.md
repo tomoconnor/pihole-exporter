@@ -12,7 +12,8 @@
 > [#289](https://github.com/eko/pihole-exporter/issues/289), and a fix was
 > offered in [#328](https://github.com/eko/pihole-exporter/pull/328) and
 > again in [#330](https://github.com/eko/pihole-exporter/pull/330). None of
-> them have been actioned.
+> them have been actioned. The full root-cause analysis is written up
+> upstream in [#332](https://github.com/eko/pihole-exporter/issues/332).
 >
 > All credit for the original exporter goes to
 > [Vincent Composieux](https://github.com/eko) and its contributors. This
