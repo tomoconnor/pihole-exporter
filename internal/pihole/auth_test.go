@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eko/pihole-exporter/internal/metrics"
-	"github.com/eko/pihole-exporter/internal/piholetest"
+	"github.com/tomoconnor/pihole-exporter/internal/metrics"
+	"github.com/tomoconnor/pihole-exporter/internal/piholetest"
 )
 
 func init() { metrics.Init() }

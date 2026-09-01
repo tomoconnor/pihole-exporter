@@ -4,7 +4,7 @@ ARG ARCH=amd64
 
 FROM golang:1.25.5-alpine3.21 AS builder
 
-WORKDIR /go/src/github.com/eko/pihole-exporter
+WORKDIR /go/src/github.com/tomoconnor/pihole-exporter
 COPY . .
 
 RUN apk --no-cache add git alpine-sdk
@@ -18,7 +18,7 @@ LABEL name="pihole-exporter"
 
 WORKDIR /app/
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /go/src/github.com/eko/pihole-exporter/binary pihole-exporter
+COPY --from=builder /go/src/github.com/tomoconnor/pihole-exporter/binary pihole-exporter
 
 USER 65532:65532
 

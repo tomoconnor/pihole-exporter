@@ -1,4 +1,4 @@
-module github.com/eko/pihole-exporter
+module github.com/tomoconnor/pihole-exporter
 
 go 1.24.1
 

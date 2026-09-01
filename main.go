@@ -6,10 +6,10 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/eko/pihole-exporter/config"
-	"github.com/eko/pihole-exporter/internal/metrics"
-	"github.com/eko/pihole-exporter/internal/pihole"
-	"github.com/eko/pihole-exporter/internal/server"
+	"github.com/tomoconnor/pihole-exporter/config"
+	"github.com/tomoconnor/pihole-exporter/internal/metrics"
+	"github.com/tomoconnor/pihole-exporter/internal/pihole"
+	"github.com/tomoconnor/pihole-exporter/internal/server"
 	"github.com/xonvanetta/shutdown/pkg/shutdown"
 )
 

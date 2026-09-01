@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eko/pihole-exporter/config"
-	"github.com/eko/pihole-exporter/internal/pihole"
+	"github.com/tomoconnor/pihole-exporter/config"
+	"github.com/tomoconnor/pihole-exporter/internal/pihole"
 )
 
 // Options configures the fake.

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eko/pihole-exporter/internal/metrics"
-	"github.com/eko/pihole-exporter/internal/pihole"
-	"github.com/eko/pihole-exporter/internal/piholetest"
-	"github.com/eko/pihole-exporter/internal/server"
+	"github.com/tomoconnor/pihole-exporter/internal/metrics"
+	"github.com/tomoconnor/pihole-exporter/internal/pihole"
+	"github.com/tomoconnor/pihole-exporter/internal/piholetest"
+	"github.com/tomoconnor/pihole-exporter/internal/server"
 )
 
 func init() { metrics.Init() }

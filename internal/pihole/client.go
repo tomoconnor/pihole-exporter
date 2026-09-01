@@ -6,8 +6,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/eko/pihole-exporter/config"
-	"github.com/eko/pihole-exporter/internal/metrics"
+	"github.com/tomoconnor/pihole-exporter/config"
+	"github.com/tomoconnor/pihole-exporter/internal/metrics"
 )
 
 // Client struct is a Pi-hole client to request an instance of a Pi-hole ad blocker.
