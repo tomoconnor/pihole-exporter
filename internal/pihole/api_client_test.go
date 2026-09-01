@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eko/pihole-exporter/internal/pihole"
+	"github.com/tomoconnor/pihole-exporter/internal/pihole"
 )
 
 // transport returns the transport of the client

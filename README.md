@@ -1,8 +1,75 @@
 # Pi-hole Prometheus Exporter
 
-![Build/Push (master)](<https://github.com/eko/pihole-exporter/workflows/Build/Push%20(master)/badge.svg>)
-[![GoDoc](https://godoc.org/github.com/eko/pihole-exporter?status.png)](https://godoc.org/github.com/eko/pihole-exporter)
-[![GoReportCard](https://goreportcard.com/badge/github.com/eko/pihole-exporter)](https://goreportcard.com/report/github.com/eko/pihole-exporter)
+[![CI](https://github.com/tomoconnor/pihole-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/tomoconnor/pihole-exporter/actions/workflows/ci.yml)
+[![GoReportCard](https://goreportcard.com/badge/github.com/tomoconnor/pihole-exporter)](https://goreportcard.com/report/github.com/tomoconnor/pihole-exporter)
+
+> ### This is a maintained fork of [`eko/pihole-exporter`](https://github.com/eko/pihole-exporter)
+>
+> Upstream has had no release since [v1.2.0](https://github.com/eko/pihole-exporter/releases/tag/v1.2.0)
+> (July 2025). The bug described below is reported in
+> [#318](https://github.com/eko/pihole-exporter/issues/318),
+> [#327](https://github.com/eko/pihole-exporter/issues/327) and
+> [#289](https://github.com/eko/pihole-exporter/issues/289), and a fix was
+> offered in [#328](https://github.com/eko/pihole-exporter/pull/328) and
+> again in [#330](https://github.com/eko/pihole-exporter/pull/330). None of
+> them have been actioned.
+>
+> All credit for the original exporter goes to
+> [Vincent Composieux](https://github.com/eko) and its contributors. This
+> fork keeps the original MIT licence and copyright, and **does not rename,
+> relabel or remove any metric** — it is a drop-in replacement for
+> `ekofr/pihole-exporter:v1.2.0`.
+
+## Why this fork exists
+
+On Pi-hole v6 the upstream exporter degrades until `/metrics` stops
+answering within a scrape timeout, and only a restart clears it. Two
+independent faults cause it.
+
+**1. One slow scrape wedged every scrape after it.** Each Pi-hole client
+owned a single buffered channel shared by every `/metrics` request for the
+life of the process. On the timeout path the handler started a *second*
+reader of that channel, so two readers competed for one result. The loser
+became a ghost reader that consumed the *next* request's result, and from
+then on each scrape blocked until the one after it arrived — roughly one
+scrape interval per request, forever. Measured against the pre-fix code:
+a scrape given a 300 ms deadline took 5.0 s, and the scrape after it never
+returned at all.
+
+**2. The session was thrown away and re-bought constantly.** `POST /api/auth`
+costs a real Pi-hole v6 **1.5–4 seconds** of single-threaded CPU, because the
+API password is hashed with a deliberately expensive KDF; upstream Pi-hole
+considers that cost intentional and will not change it. An
+already-authenticated query costs about **5 ms**. The old client treated a
+session validity of zero as "expired already", so when Pi-hole reported no
+validity it authenticated once per API endpoint — seven times per scrape.
+It also had no handling for a `401` at all, so once Pi-hole restarted or
+evicted the session, every scrape failed until the exporter was restarted.
+
+### What changed
+
+| | Before | After |
+|---|---|---|
+| `/metrics`, warm session | 21.1 s cold, then stalls indefinitely | **3.06 s cold, 0.045–0.049 s warm** |
+| Authentications per scrape | up to 7 | **0** (1 on first scrape, then reused) |
+| Concurrent scrapes | each blocked for the full auth | collapse onto one authentication |
+| Pi-hole restarts / session evicted | fails until exporter restart | one re-auth, scrape succeeds |
+| A scrape that times out | wedges all later scrapes | no effect on later scrapes |
+
+Measured end to end against a fake Pi-hole whose `/api/auth` sleeps 3 s, the
+rest of it answering in 5 ms — i.e. the real cost profile. Both the hang and
+the authentication count have regression tests
+(`internal/server/server_test.go`, `internal/pihole/auth_test.go`) that fail
+against the pre-fix code.
+
+### Also swept in from unmerged upstream work
+
+- `PIHOLE_PASSWORD_FILE`, for Docker/Kubernetes secrets — [#331](https://github.com/eko/pihole-exporter/pull/331) by [@gramtech](https://github.com/gramtech)
+- CA certificates in the container image, so `PIHOLE_PROTOCOL=https` works — [#299](https://github.com/eko/pihole-exporter/pull/299) by [@mnlhfr](https://github.com/mnlhfr)
+- Diagnosis of the `/metrics` hang — [#328](https://github.com/eko/pihole-exporter/pull/328) by [@nicjansma](https://github.com/nicjansma), rebased in [#330](https://github.com/eko/pihole-exporter/pull/330) by [@iSkrumpie](https://github.com/iSkrumpie)
+- Dependency bumps [#319](https://github.com/eko/pihole-exporter/pull/319), [#304](https://github.com/eko/pihole-exporter/pull/304), [#301](https://github.com/eko/pihole-exporter/pull/301), [#320](https://github.com/eko/pihole-exporter/pull/320), [#313](https://github.com/eko/pihole-exporter/pull/313)
+
+---
 
 This is a Prometheus exporter for [Pi-hole](https://pi-hole.net/)'s Raspberry PI ad blocker.
 
@@ -21,26 +88,37 @@ Available Grafana Dasboards:
 
 ### Download binary
 
-You can download the latest version of the binary built for your architecture here:
+Binaries and a `SHA256SUMS.txt` are attached to each
+[release](https://github.com/tomoconnor/pihole-exporter/releases/latest):
 
-- Architecture **i386** [
-  [Linux](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-linux-386) /
-  [Windows](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-windows-386.exe)
-  ]
-- Architecture **amd64** [
-  [Darwin](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-darwin-amd64) /
-  [Linux](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-linux-amd64) /
-  [Windows](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-windows-amd64.exe)
-  ]
-- Architecture **arm** [
-  [Darwin](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-darwin-arm64) /
-  [Linux](https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-linux-arm)
-  ]
+| OS | Architecture | File |
+|---|---|---|
+| Linux | amd64 | [`pihole_exporter-linux-amd64`](https://github.com/tomoconnor/pihole-exporter/releases/latest/download/pihole_exporter-linux-amd64) |
+| Linux | arm64 | [`pihole_exporter-linux-arm64`](https://github.com/tomoconnor/pihole-exporter/releases/latest/download/pihole_exporter-linux-arm64) |
+| Linux | arm (32-bit, ARMv6/7) | [`pihole_exporter-linux-arm`](https://github.com/tomoconnor/pihole-exporter/releases/latest/download/pihole_exporter-linux-arm) |
+| macOS | amd64 | [`pihole_exporter-darwin-amd64`](https://github.com/tomoconnor/pihole-exporter/releases/latest/download/pihole_exporter-darwin-amd64) |
+| macOS | arm64 | [`pihole_exporter-darwin-arm64`](https://github.com/tomoconnor/pihole-exporter/releases/latest/download/pihole_exporter-darwin-arm64) |
+
+The `linux-arm` build is 32-bit ARM; `linux-arm64` is 64-bit. Upstream named
+these ambiguously, which is [eko/pihole-exporter#321](https://github.com/eko/pihole-exporter/issues/321).
+Windows and i386 builds are not published here — ask if you want them back.
+
+Or with Go installed:
+
+```bash
+$ go install github.com/tomoconnor/pihole-exporter@latest
+```
 
 ### Using Docker
 
-The exporter is also available as a [Docker image](https://hub.docker.com/r/ekofr/pihole-exporter).
-You can run it using the following example and pass configuration environment variables:
+The exporter is published to GHCR for **linux/amd64**:
+
+```
+ghcr.io/tomoconnor/pihole-exporter:latest
+```
+
+Pin a version rather than tracking `latest`. You can run it using the
+following example and pass configuration environment variables:
 
 ```
 $ docker run \
@@ -48,7 +126,7 @@ $ docker run \
   -e 'PIHOLE_PASSWORD=mypassword' \
   -e 'PORT=9617' \
   -p 9617:9617 \
-  ekofr/pihole-exporter:latest
+  ghcr.io/tomoconnor/pihole-exporter:latest
 ```
 
 Or use PiHole's `WEBPASSWORD` as an API token instead of the password
@@ -60,7 +138,7 @@ $ docker run \
   -e "PIHOLE_PASSWORD=$API_TOKEN" \
   -e 'PORT=9617' \
   -p 9617:9617 \
-  ekofr/pihole-exporter:latest
+  ghcr.io/tomoconnor/pihole-exporter:latest
 ```
 
 If you are running pi-hole behind https, you must both set the `PIHOLE_PROTOCOL` environment variable
@@ -74,7 +152,7 @@ $ docker run \
   -e 'PORT=9617' \
   -v '/etc/ssl/certs:/etc/ssl/certs:ro' \
   -p 9617:9617 \
-  ekofr/pihole-exporter:latest
+  ghcr.io/tomoconnor/pihole-exporter:latest
 ```
 
 If you want to skip SSL certificate verification, pass in the following to either your Docker Compose file (-e) or the file holding environment variables (e.g. `.env`):
@@ -94,7 +172,7 @@ $ docker run \
   -e "PIHOLE_PORT=8080,8081,8080" \
   -e 'PORT=9617' \
   -p 9617:9617 \
-  ekofr/pihole-exporter:latest
+  ghcr.io/tomoconnor/pihole-exporter:latest
 ```
 
 If port, protocol and API token/password is the same for all instances, you can specify them only once:
@@ -107,7 +185,7 @@ $ docker run \
   -e "PIHOLE_PORT=8080" \
   -e 'PORT=9617' \
   -p 9617:9617 \
-  ekofr/pihole-exporter:latest
+  ghcr.io/tomoconnor/pihole-exporter:latest
 ```
 
 Instead of putting the password/API token directly in an environment variable, you can point
@@ -118,7 +196,7 @@ or one path per host. It cannot be combined with a non-empty `PIHOLE_PASSWORD`. 
 ```yaml
 services:
   pihole-exporter:
-    image: ekofr/pihole-exporter:latest
+    image: ghcr.io/tomoconnor/pihole-exporter:latest
     environment:
       PIHOLE_HOSTNAME: 192.168.1.2
       PIHOLE_PASSWORD_FILE: /run/secrets/pihole_password
@@ -258,27 +336,37 @@ scrape_configs:
 
 ## Available Prometheus metrics
 
-|         Metric name          | Description                                                                               |
-| :--------------------------: | ----------------------------------------------------------------------------------------- |
-| pihole_domains_being_blocked | This represent the number of domains being blocked                                        |
-|   pihole_dns_queries_today   | This represent the number of DNS queries made over the current day                        |
-|   pihole_ads_blocked_today   | This represent the number of ads blocked over the current day                             |
-| pihole_ads_percentage_today  | This represent the percentage of ads blocked over the current day                         |
-|    pihole_unique_domains     | This represent the number of unique domains seen                                          |
-|   pihole_queries_forwarded   | This represent the number of queries forwarded                                            |
-|    pihole_queries_cached     | This represent the number of queries cached                                               |
-|   pihole_clients_ever_seen   | This represent the number of clients ever seen                                            |
-|    pihole_unique_clients     | This represent the number of unique clients seen                                          |
-| pihole_dns_queries_all_types | This represent the number of DNS queries made for all types                               |
-|         pihole_reply         | This represent the number of replies made for all types                                   |
-|      pihole_top_queries      | This represent the number of top queries made by Pi-hole by domain                        |
-|        pihole_top_ads        | This represent the number of top ads made by Pi-hole by domain                            |
-|      pihole_top_sources      | This represent the number of top sources requests made by Pi-hole by source host          |
-| pihole_forward_destinations  | This represent the number of forward destinations requests made by Pi-hole by destination |
-|      pihole_querytypes       | This represent the number of queries made by Pi-hole by type                              |
-|        pihole_status         | This represent if Pi-hole is enabled                                                      |
-|      queries_last_10min      | This represent the number of queries in the last full slot of 10 minutes                  |
-|        ads_last_10min        | This represent the number of ads in the last full slot of 10 minutes                      |
+All 20 metrics below are unchanged from upstream v1.2.0, in both name and
+labels. Every metric carries a `hostname` label; some carry more.
+
+| Metric name | Extra labels | Description |
+| --- | --- | --- |
+| `pihole_domains_being_blocked` | | Number of domains being blocked |
+| `pihole_dns_queries_today` | | Number of DNS queries made over the current day |
+| `pihole_ads_blocked_today` | | Number of ads blocked over the current day |
+| `pihole_ads_percentage_today` | | Percentage of ads blocked over the current day |
+| `pihole_unique_domains` | | Number of unique domains seen |
+| `pihole_queries_forwarded` | | Number of queries forwarded |
+| `pihole_queries_cached` | | Number of queries cached |
+| `pihole_clients_ever_seen` | | Number of clients ever seen |
+| `pihole_unique_clients` | | Number of unique clients seen |
+| `pihole_dns_queries_all_types` | | Number of DNS queries made for all types |
+| `pihole_reply` | `type` | Number of replies made, by reply type |
+| `pihole_top_queries` | `domain` | Top permitted queries, by domain |
+| `pihole_top_ads` | `domain` | Top blocked queries, by domain |
+| `pihole_top_sources` | `source`, `source_name` | Top requesting clients |
+| `pihole_forward_destinations` | `destination`, `destination_name` | Queries by upstream destination |
+| `pihole_forward_destinations_responsetime` | `destination`, `destination_name` | Mean response time per upstream |
+| `pihole_forward_destinations_responsevariance` | `destination`, `destination_name` | Response time variance per upstream |
+| `pihole_querytypes` | `type` | Queries by DNS query type |
+| `pihole_request_rate` | | Query frequency reported by Pi-hole |
+| `pihole_status` | | 1 if Pi-hole blocking is enabled, 0 otherwise |
+
+Two metrics that earlier READMEs listed, `queries_last_10min` and
+`ads_last_10min`, have not been emitted since the Pi-hole v6 API rewrite.
+They are removed from this table rather than from the code — there is
+nothing in the code to remove. See
+[eko/pihole-exporter#314](https://github.com/eko/pihole-exporter/issues/314).
 
 ## Pihole-Exporter Helm Chart
 

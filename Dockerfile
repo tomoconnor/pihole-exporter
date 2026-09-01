@@ -1,25 +1,34 @@
 ARG IMAGE=scratch
-ARG OS=linux
-ARG ARCH=amd64
 
-FROM golang:1.25.5-alpine3.21 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.5-alpine3.21 AS builder
 
-WORKDIR /go/src/github.com/eko/pihole-exporter
+WORKDIR /src
+
+# Dependencies first, so a source-only change does not re-download them.
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
 
-RUN apk --no-cache add git alpine-sdk
-
-RUN go mod vendor
-RUN CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH go build -ldflags '-s -w' -o binary ./
+# TARGETOS/TARGETARCH are supplied by BuildKit from --platform, so the
+# builder always runs natively and only the output is cross-compiled.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags '-s -w' -o /out/pihole-exporter ./
 
 FROM $IMAGE
 
-LABEL name="pihole-exporter"
+LABEL org.opencontainers.image.title="pihole-exporter" \
+      org.opencontainers.image.description="Prometheus exporter for Pi-hole. Maintained fork of eko/pihole-exporter." \
+      org.opencontainers.image.source="https://github.com/tomoconnor/pihole-exporter" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app/
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /go/src/github.com/eko/pihole-exporter/binary pihole-exporter
+COPY --from=builder /out/pihole-exporter pihole-exporter
 
 USER 65532:65532
+EXPOSE 9617
 
-CMD ["./pihole-exporter"]
+ENTRYPOINT ["/app/pihole-exporter"]
