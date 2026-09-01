@@ -190,3 +190,48 @@ func TestConcurrentScrapesShareOneReauthAfterExpiry(t *testing.T) {
 		t.Fatalf("%d collectors hitting an expired session caused %d authentications, want at most 2", collectors, got)
 	}
 }
+
+// TestAuthGetsMoreTimeThanAQuery covers the timeout asymmetry: an ordinary
+// query costs Pi-hole about 5ms, but /api/auth costs 1.5-4s and spikes past
+// the 5s default client timeout when FTL is busy (loading gravity at startup,
+// say). Observed in the wild as the first scrape after a restart failing with
+// "context deadline exceeded" on /api/auth.
+func TestAuthGetsMoreTimeThanAQuery(t *testing.T) {
+	// Authentication takes longer than the configured client timeout, but
+	// well inside the authentication allowance.
+	fake := piholetest.New(t, piholetest.Options{Validity: 1800, AuthDelay: 3 * time.Second})
+	client := fake.Client(t, 2*time.Second)
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := client.CollectMetrics(ctx); err != nil {
+		t.Fatalf("scrape failed because authentication was held to the query timeout: %v", err)
+	}
+	if got := fake.AuthCount(); got != 1 {
+		t.Fatalf("%d authentications, want 1", got)
+	}
+}
+
+// TestAuthStillHonoursCallerDeadline is the other half: the longer allowance
+// must not let authentication outlive a scrape that has run out of budget.
+func TestAuthStillHonoursCallerDeadline(t *testing.T) {
+	fake := piholetest.New(t, piholetest.Options{Validity: 1800, AuthDelay: 10 * time.Second})
+	client := fake.Client(t, 30*time.Second)
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := client.CollectMetrics(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the scrape to fail once its deadline passed")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("scrape took %s to abandon a 300ms deadline", elapsed)
+	}
+}

@@ -33,12 +33,28 @@ const (
 	// 1.5-4s of single-threaded CPU because the API password is hashed with a
 	// deliberately expensive KDF, so this is a load-bearing floor, not a tidy-up.
 	minSessionValidity = 30 * time.Second
+
+	// minAuthTimeout gives authentication more headroom than an ordinary
+	// query. The default client timeout is 5s, which is fine for a query that
+	// costs ~5ms but marginal for one that costs 1.5-4s and spikes past 5s
+	// when FTL is busy -- loading gravity at startup, for instance. Observed
+	// in the wild: the exporter's first scrape after a restart failing with
+	// "context deadline exceeded" on /api/auth while ordinary scrapes were
+	// answering in well under a second.
+	//
+	// The caller's context still bounds this, so a scrape that has run out of
+	// budget aborts regardless. This only stops the client timeout from being
+	// the tighter of the two.
+	minAuthTimeout = 15 * time.Second
 )
 
 type APIClient struct {
-	BaseURL  string
-	Client   *http.Client
-	password string
+	BaseURL string
+	Client  *http.Client
+	// authClient is Client with a longer timeout, used only for /api/auth.
+	// It shares Client's transport, so both use the same connection pool.
+	authClient *http.Client
+	password   string
 
 	mu       sync.Mutex
 	sid      string
@@ -75,6 +91,10 @@ func NewAPIClient(baseURL string, password string, timeout time.Duration, skipTL
 		password: password,
 		Client: &http.Client{
 			Timeout:   timeout,
+			Transport: transport,
+		},
+		authClient: &http.Client{
+			Timeout:   max(timeout, minAuthTimeout),
 			Transport: transport,
 		},
 	}
@@ -180,7 +200,7 @@ func (c *APIClient) doAuthenticate(ctx context.Context) (sid string, validity in
 
 	log.Debugf("Authenticating to %s", c.BaseURL)
 
-	ctx, cancel := context.WithTimeout(ctx, c.Client.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, c.authClient.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -189,7 +209,7 @@ func (c *APIClient) doAuthenticate(ctx context.Context) (sid string, validity in
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.Client.Do(req)
+	resp, err := c.authClient.Do(req)
 	if err != nil {
 		log.Errorf("Authentication request failed: %v", err)
 		return "", 0, fmt.Errorf("authentication request failed: %w", err)
