@@ -61,7 +61,9 @@ func New(t *testing.T, opts Options) *Server {
 
 	mux.HandleFunc("/api/auth", func(w http.ResponseWriter, r *http.Request) {
 		s.authCount.Add(1)
-		time.Sleep(s.opts.AuthDelay)
+		if !delay(r, s.opts.AuthDelay) {
+			return
+		}
 
 		s.mu.Lock()
 		s.expired = false
@@ -93,7 +95,9 @@ func New(t *testing.T, opts Options) *Server {
 			}
 
 			s.fetchCount.Add(1)
-			time.Sleep(s.opts.FetchDelay)
+			if !delay(r, s.opts.FetchDelay) {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, body)
 		}
@@ -108,6 +112,24 @@ func New(t *testing.T, opts Options) *Server {
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 	return s
+}
+
+// delay sleeps for d unless the client gives up first, reporting whether the
+// handler should still write a response. A plain time.Sleep would keep the
+// connection busy after the client has gone, which makes httptest.Server.Close
+// block for seconds at the end of a test.
+func delay(r *http.Request, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-r.Context().Done():
+		return false
+	}
 }
 
 // AuthCount is the number of POST /api/auth calls served so far.
