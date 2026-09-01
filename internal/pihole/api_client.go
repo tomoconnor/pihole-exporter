@@ -121,7 +121,11 @@ func (c *APIClient) ensureAuth() error {
 }
 
 // FetchData makes a GET request to the specified endpoint and parses the response.
-func (c *APIClient) FetchData(endpoint string, result interface{}) error {
+//
+// The request is bound to ctx as well as to the client timeout, so a caller
+// that has given up (for example a /metrics request whose deadline expired)
+// aborts the in-flight request instead of leaving it running.
+func (c *APIClient) FetchData(ctx context.Context, endpoint string, result interface{}) error {
 	if err := c.ensureAuth(); err != nil {
 		return err
 	}
@@ -129,7 +133,10 @@ func (c *APIClient) FetchData(endpoint string, result interface{}) error {
 	url := fmt.Sprintf("%s%s", c.BaseURL, endpoint)
 	log.Debugf("Fetching data from %s", url)
 
-	req, err := http.NewRequest("GET", url, nil)
+	ctx, cancel := context.WithTimeout(ctx, c.Client.Timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -137,10 +144,6 @@ func (c *APIClient) FetchData(endpoint string, result interface{}) error {
 	// Add security headers
 	req.Header.Set("X-FTL-SID", c.sessionID)
 	req.Header.Set("X-Content-Type-Options", "nosniff")
-
-	ctx, cancel := context.WithTimeout(context.Background(), c.Client.Timeout)
-	defer cancel()
-	req = req.WithContext(ctx)
 
 	resp, err := c.Client.Do(req)
 	if err != nil {

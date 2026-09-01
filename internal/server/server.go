@@ -1,17 +1,19 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/eko/pihole-exporter/internal/pihole"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
 )
+
+// collectionTimeout bounds how long a single /metrics request will spend
+// scraping Pi-hole before it gives up and serves what it has.
+const collectionTimeout = 10 * time.Second
 
 // Server is the struct for the HTTP server.
 type Server struct {
@@ -34,57 +36,37 @@ func NewServer(addr string, port uint16, clients []*pihole.Client) *Server {
 	mux.HandleFunc("/metrics", func(writer http.ResponseWriter, request *http.Request) {
 		log.Debugf("request.Header: %+v\n", request.Header)
 
-		// Use a WaitGroup to track goroutines
-		var wg sync.WaitGroup
-		// Create a context with timeout for metrics collection
-		ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
+		// Bound the whole collection. Deriving from request.Context() means a
+		// client that hangs up also cancels the Pi-hole requests.
+		ctx, cancel := context.WithTimeout(request.Context(), collectionTimeout)
 		defer cancel()
 
-		// Channel to collect results from goroutines
-		resultChan := make(chan *pihole.ClientChannel, len(clients))
+		// Buffered for every client, so a goroutine whose result nobody is
+		// waiting for any more can still send and exit rather than leaking.
+		type result struct {
+			hostname string
+			err      error
+		}
+		results := make(chan result, len(clients))
 
 		for _, client := range clients {
-			wg.Add(1)
 			go func(c *pihole.Client) {
-				defer wg.Done()
-
-				// Create a channel for this goroutine
-				doneChan := make(chan struct{})
-
-				go func() {
-					c.CollectMetricsAsync(writer, request)
-					close(doneChan)
-				}()
-
-				// Wait for either completion or timeout
-				select {
-				case <-doneChan:
-					// Normal completion, status will be read below
-				case <-ctx.Done():
-					// Timeout occurred
-					resultChan <- &pihole.ClientChannel{
-						Status: pihole.MetricsCollectionTimeout,
-						Err:    fmt.Errorf("metrics collection from %s timed out", c.GetHostname()),
-					}
-					// We need to read from the Status channel to prevent blocking
-					go func() {
-						<-c.Status // Discard the result when it eventually comes
-					}()
-				}
+				results <- result{hostname: c.GetHostname(), err: c.CollectMetrics(ctx)}
 			}(client)
 		}
 
-		// Start a goroutine to close resultChan when all goroutines are done
-		go func() {
-			wg.Wait()
-			close(resultChan)
-		}()
-
-		// Read all results
-		for _, client := range clients {
-			status := <-client.Status
-			if status.Status != pihole.MetricsCollectionSuccess {
-				log.Warnf("An error occurred while contacting %s: %+v\n", client.GetHostname(), status.Err)
+		for range clients {
+			select {
+			case res := <-results:
+				if res.err != nil {
+					log.Warnf("An error occurred while contacting %s: %v", res.hostname, res.err)
+				}
+			case <-ctx.Done():
+				// Out of time. Serve whatever the finished collectors managed
+				// to record; cancelling ctx unblocks the stragglers.
+				log.Warnf("Metrics collection gave up (%v), serving partial metrics", ctx.Err())
+				promhttp.Handler().ServeHTTP(writer, request)
+				return
 			}
 		}
 
@@ -95,6 +77,12 @@ func NewServer(addr string, port uint16, clients []*pihole.Client) *Server {
 	mux.Handle("/liveness", s.livenessHandler())
 
 	return s
+}
+
+// Handler exposes the server's routes, so they can be exercised without
+// binding a port.
+func (s *Server) Handler() http.Handler {
+	return s.httpServer.Handler
 }
 
 // ListenAndServe method serves HTTP requests.
@@ -108,28 +96,6 @@ func (s *Server) Stop() {
 	defer cancel()
 
 	s.httpServer.Shutdown(ctx)
-}
-
-// handleMetrics, helper function is unused
-func (s *Server) handleMetrics(clients []*pihole.Client) http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		errors := make([]string, 0)
-
-		for _, client := range clients {
-			if err := client.CollectMetrics(writer, request); err != nil {
-				errors = append(errors, err.Error())
-				log.Warnf("error collecting metrics from %s: %+v\n", client.GetHostname(), err)
-			}
-		}
-
-		if len(errors) == len(clients) {
-			writer.WriteHeader(http.StatusBadRequest)
-			body := strings.Join(errors, "\n")
-			_, _ = writer.Write([]byte(body))
-		}
-
-		promhttp.Handler().ServeHTTP(writer, request)
-	}
 }
 
 func (s *Server) readinessHandler() http.HandlerFunc {
