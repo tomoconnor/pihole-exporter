@@ -217,7 +217,11 @@ func TestAuthGetsMoreTimeThanAQuery(t *testing.T) {
 // TestAuthStillHonoursCallerDeadline is the other half: the longer allowance
 // must not let authentication outlive a scrape that has run out of budget.
 func TestAuthStillHonoursCallerDeadline(t *testing.T) {
-	fake := piholetest.New(t, piholetest.Options{Validity: 1800, AuthDelay: 10 * time.Second})
+	// Long enough to outlast the caller's deadline by an order of magnitude,
+	// short enough that the fake is not still serving it at teardown: Go's
+	// HTTP server does not always notice the hung-up client promptly, so a
+	// much longer delay leaves httptest.Server.Close blocking.
+	fake := piholetest.New(t, piholetest.Options{Validity: 1800, AuthDelay: 3 * time.Second})
 	client := fake.Client(t, 30*time.Second)
 	defer client.Close()
 
