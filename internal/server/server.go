@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tomoconnor/pihole-exporter/internal/pihole"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+	"github.com/tomoconnor/pihole-exporter/internal/pihole"
 )
 
 // collectionTimeout bounds how long a single /metrics request will spend
